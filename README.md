@@ -1,9 +1,6 @@
 # Rapport de Modélisation UPPAAL
 ## Système de Livraison par Drones
 
-**📂 Repository GitHub** : [https://github.com/Nabil-Bkz/-Syst-me-de-Livraison-par-Drones](https://github.com/Nabil-Bkz/-Syst-me-de-Livraison-par-Drones)
-
----
 
 ## Table des Matières
 
