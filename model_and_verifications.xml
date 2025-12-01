@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.6//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd'>
+<nta>
+	<declaration>// Place global déclarations ici.
+const int ND = 2;               // nombre de drones
+const int N_PLATFORMS = 2;      // 0 = plateforme de chargement, 1 = plateforme de déchargement
+
+// Constantes batterie
+const int BAT_MAX = 100;        // batterie maximale
+const int BAT_COST = 5;         // consommation par transition
+const int BAT_CRITICAL = 10;    // seuil critique : doit retourner charger
+const int BAT_MIN_UNLOAD = 20;  // seuil min pour aller vers déchargement (besoin de 2 transitions retour)
+
+int[0,1] missionType;           // 0 = mission type 1, 1 = mission type 2
+// 1 si le drone i est disponible, 0 sinon
+int available[ND];
+
+// Verrou des plateformes: -1 = libre, sinon ID du drone
+int platform_lock[N_PLATFORMS] = {-1, -1};
+
+bool isPlatformFree(int p) {
+    return platform_lock[p] == -1;
+}
+
+void lockPlatform(int p, int droneId) {
+    platform_lock[p] = droneId;
+}
+
+void unlockPlatform(int p) {
+    platform_lock[p] = -1;
+}
+
+// Fonction pour limiter la batterie au max
+int minBat(int a, int b) {
+    return (a &lt; b) ? a : b;
+}
+
+// canaux de synchronisation
+broadcast chan initCh;
+broadcast chan missionCh[ND];
+broadcast chan stormStart;      // signal début tempête
+broadcast chan stormEnd;        // signal fin tempête
+
+// État global de la météo : true = tempête en cours
+bool isStorm = false;
+</declaration>
+	<template>
+		<name x="5" y="5">drone</name>
+		<parameter>const int id</parameter>
+		<declaration>// Variables locales au drone
+int battery = BAT_MAX;  // batterie initialisée à 100
+clock t;                // horloge pour le temps de charge
+</declaration>
+		<location id="id0" x="-200" y="0">
+			<name x="-210" y="-30">Iddle</name>
+		</location>
+		<location id="id1" x="0" y="0">
+			<name x="-10" y="-30">Ready</name>
+		</location>
+		<location id="id2" x="8" y="-255">
+			<name x="-2" y="-285">ToLoading</name>
+		</location>
+		<location id="id3" x="493" y="-255">
+			<name x="463" y="-285">WaitLoadPlatform</name>
+		</location>
+		<location id="id4" x="1011" y="-255">
+			<name x="986" y="-306">Loading</name>
+		</location>
+		<location id="id5" x="1013" y="-63">
+			<name x="1028" y="-85">ToUnloading</name>
+		</location>
+		<location id="id6" x="1020" y="161">
+			<name x="958" y="110">WaitUnloadPlatform</name>
+		</location>
+		<location id="id7" x="586" y="170">
+			<name x="595" y="128">Unloading</name>
+		</location>
+		<location id="idCharging" x="0" y="300">
+			<name x="-30" y="315">Charging</name>
+			<label kind="invariant" x="-30" y="330">t &lt;= 10</label>
+		</location>
+		<location id="idSafeZone" x="-200" y="300">
+			<name x="-230" y="315">SafeZone</name>
+		</location>
+		<init ref="id0"/>
+		<!-- Iddle -> Ready: initialisation -->
+		<transition id="id8">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-150" y="-50">initCh?</label>
+			<label kind="assignment" x="-150" y="-30">available[id] = 1</label>
+		</transition>
+		<!-- Ready -> ToLoading: reception mission (batterie > critique) -->
+		<transition id="id9">
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-119" y="-220">battery &gt; BAT_CRITICAL</label>
+			<label kind="synchronisation" x="-119" y="-195">missionCh[id]?</label>
+			<label kind="assignment" x="-153" y="-144">available[id] = 0, battery = battery - BAT_COST</label>
+		</transition>
+		<!-- Ready -> Charging: batterie critique -->
+		<transition id="idReadyToCharge">
+			<source ref="id1"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="-100" y="100">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="-100" y="120">available[id] = 0, t = 0</label>
+		</transition>
+		<!-- ToLoading -> WaitLoadPlatform -->
+		<transition id="id10">
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="guard" x="150" y="-280">battery &gt; BAT_CRITICAL</label>
+			<label kind="assignment" x="150" y="-255">battery = battery - BAT_COST</label>
+		</transition>
+		<!-- ToLoading -> Charging: batterie critique, abandon mission -->
+		<transition id="idToLoadCharge">
+			<source ref="id2"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="-200" y="-150">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="-200" y="-130">t = 0</label>
+			<nail x="-100" y="-255"/>
+			<nail x="-100" y="300"/>
+		</transition>
+		<!-- WaitLoadPlatform -> Loading: plateforme libre et batterie ok -->
+		<transition id="id11">
+			<source ref="id3"/>
+			<target ref="id4"/>
+			<label kind="guard" x="680" y="-340">isPlatformFree(0) &amp;&amp; battery &gt; BAT_CRITICAL</label>
+			<label kind="assignment" x="663" y="-297">lockPlatform(0, id), battery = battery - BAT_COST</label>
+		</transition>
+		<!-- WaitLoadPlatform -> Charging: batterie critique -->
+		<transition id="idWaitLoadCharge">
+			<source ref="id3"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="200" y="100">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="200" y="120">t = 0</label>
+			<nail x="493" y="300"/>
+		</transition>
+		<!-- Loading -> ToUnloading: libère plateforme 0, batterie suffisante pour continuer -->
+		<transition id="id12">
+			<source ref="id4"/>
+			<target ref="id5"/>
+			<label kind="guard" x="1028" y="-220">battery &gt; BAT_MIN_UNLOAD</label>
+			<label kind="assignment" x="1028" y="-187">unlockPlatform(0), battery = battery - BAT_COST</label>
+		</transition>
+		<!-- Loading -> Charging: batterie trop faible, libère plateforme et retourne charger -->
+		<transition id="idLoadCharge">
+			<source ref="id4"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="600" y="250">battery &lt;= BAT_MIN_UNLOAD</label>
+			<label kind="assignment" x="600" y="270">unlockPlatform(0), t = 0</label>
+			<nail x="1011" y="300"/>
+		</transition>
+		<!-- ToUnloading -> WaitUnloadPlatform -->
+		<transition id="id13">
+			<source ref="id5"/>
+			<target ref="id6"/>
+			<label kind="guard" x="1030" y="20">battery &gt; BAT_CRITICAL</label>
+			<label kind="assignment" x="1030" y="40">battery = battery - BAT_COST</label>
+		</transition>
+		<!-- ToUnloading -> Charging: batterie critique -->
+		<transition id="idToUnloadCharge">
+			<source ref="id5"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="600" y="-50">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="600" y="-30">t = 0</label>
+			<nail x="600" y="-63"/>
+			<nail x="200" y="300"/>
+		</transition>
+		<!-- WaitUnloadPlatform -> Unloading: plateforme libre et batterie ok -->
+		<transition id="id14">
+			<source ref="id6"/>
+			<target ref="id7"/>
+			<label kind="guard" x="773" y="170">isPlatformFree(1) &amp;&amp; battery &gt; BAT_CRITICAL</label>
+			<label kind="assignment" x="773" y="204">lockPlatform(1, id), battery = battery - BAT_COST</label>
+		</transition>
+		<!-- WaitUnloadPlatform -> Charging: batterie critique -->
+		<transition id="idWaitUnloadCharge">
+			<source ref="id6"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="700" y="250">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="700" y="270">t = 0</label>
+			<nail x="700" y="300"/>
+		</transition>
+		<!-- Unloading -> Ready: fin de mission, libère plateforme -->
+		<transition id="id15">
+			<source ref="id7"/>
+			<target ref="id1"/>
+			<label kind="guard" x="200" y="150">battery &gt; BAT_CRITICAL</label>
+			<label kind="assignment" x="42" y="195">unlockPlatform(1), available[id] = 1, battery = battery - BAT_COST</label>
+			<nail x="552" y="178"/>
+			<nail x="0" y="178"/>
+			<nail x="0" y="119"/>
+		</transition>
+		<!-- Unloading -> Charging: batterie critique après déchargement -->
+		<transition id="idUnloadCharge">
+			<source ref="id7"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="300" y="250">battery &lt;= BAT_CRITICAL</label>
+			<label kind="assignment" x="300" y="270">unlockPlatform(1), t = 0</label>
+			<nail x="400" y="300"/>
+		</transition>
+		<!-- Charging -> Charging: recharge par paliers -->
+		<transition id="idChargeLoop">
+			<source ref="idCharging"/>
+			<target ref="idCharging"/>
+			<label kind="guard" x="-150" y="350">battery &lt; BAT_MAX</label>
+			<label kind="assignment" x="-150" y="370">battery = minBat(battery + 20, BAT_MAX)</label>
+			<nail x="-50" y="350"/>
+			<nail x="50" y="350"/>
+		</transition>
+		<!-- Charging -> Ready: après 10 unités de temps et batterie suffisante, pas de tempête -->
+		<transition id="idChargeToReady">
+			<source ref="idCharging"/>
+			<target ref="id1"/>
+			<label kind="guard" x="50" y="150">t &gt;= 10 &amp;&amp; battery &gt;= BAT_MAX - 20 &amp;&amp; !isStorm</label>
+			<label kind="assignment" x="50" y="170">battery = BAT_MAX, available[id] = 1</label>
+		</transition>
+		<!-- =============== TRANSITIONS TEMPÊTE =============== -->
+		<!-- Ready -> SafeZone: tempête commence -->
+		<transition id="idReadyToSafe">
+			<source ref="id1"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="-150" y="100">stormStart?</label>
+			<label kind="assignment" x="-150" y="120">available[id] = 0</label>
+		</transition>
+		<!-- ToLoading -> SafeZone: tempête, abandon mission -->
+		<transition id="idToLoadToSafe">
+			<source ref="id2"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="-200" y="100">stormStart?</label>
+			<nail x="-200" y="-255"/>
+		</transition>
+		<!-- WaitLoadPlatform -> SafeZone: tempête -->
+		<transition id="idWaitLoadToSafe">
+			<source ref="id3"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="200" y="200">stormStart?</label>
+			<nail x="493" y="400"/>
+			<nail x="-200" y="400"/>
+		</transition>
+		<!-- Loading -> SafeZone: tempête, libère plateforme -->
+		<transition id="idLoadToSafe">
+			<source ref="id4"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="400" y="350">stormStart?</label>
+			<label kind="assignment" x="400" y="370">unlockPlatform(0)</label>
+			<nail x="1011" y="400"/>
+			<nail x="-200" y="400"/>
+		</transition>
+		<!-- ToUnloading -> doit continuer vers Unloading puis SafeZone (a un conteneur) -->
+		<!-- WaitUnloadPlatform -> Unloading forcé puis SafeZone -->
+		<transition id="idWaitUnloadToSafe">
+			<source ref="id6"/>
+			<target ref="idSafeZone"/>
+			<label kind="guard" x="500" y="300">!isPlatformFree(1)</label>
+			<label kind="synchronisation" x="500" y="320">stormStart?</label>
+			<nail x="500" y="400"/>
+			<nail x="-200" y="400"/>
+		</transition>
+		<!-- Unloading -> SafeZone: tempête, finit de décharger puis safe -->
+		<transition id="idUnloadToSafe">
+			<source ref="id7"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="200" y="300">stormStart?</label>
+			<label kind="assignment" x="200" y="320">unlockPlatform(1)</label>
+			<nail x="300" y="400"/>
+			<nail x="-200" y="400"/>
+		</transition>
+		<!-- Charging -> SafeZone: tempête pendant charge -->
+		<transition id="idChargeToSafe">
+			<source ref="idCharging"/>
+			<target ref="idSafeZone"/>
+			<label kind="synchronisation" x="-100" y="350">stormStart?</label>
+		</transition>
+		<!-- SafeZone -> Ready: fin de tempête -->
+		<transition id="idSafeToReady">
+			<source ref="idSafeZone"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-250" y="100">stormEnd?</label>
+			<label kind="assignment" x="-250" y="120">available[id] = 1</label>
+		</transition>
+	</template>
+	<template>
+		<name>controller</name>
+		<declaration>
+int[0,ND-1] cur;         // indice du drone actuellement ciblé
+bool initialized = false; // true après initialisation des drones
+</declaration>
+		<location id="id16" x="-187" y="8">
+			<name x="-221" y="-51">InitCtrl</name>
+		</location>
+		<location id="id17" x="195" y="0">
+			<name x="178" y="34">ReadyCtrl</name>
+		</location>
+		<location id="idCtrlStorm" x="195" y="150">
+			<name x="170" y="165">StormMode</name>
+		</location>
+		<init ref="id16"/>
+		<transition id="id18">
+			<source ref="id16"/>
+			<target ref="id17"/>
+			<label kind="synchronisation" x="-42" y="-34">initCh!</label>
+			<label kind="assignment" x="-42" y="-17">initialized = true</label>
+		</transition>
+		<!-- InitCtrl -> StormMode: tempête pendant init -->
+		<transition id="idInitToStorm">
+			<source ref="id16"/>
+			<target ref="idCtrlStorm"/>
+			<label kind="synchronisation" x="-100" y="80">stormStart?</label>
+		</transition>
+		<!-- Envoi mission seulement si pas de tempête -->
+		<transition id="id19">
+			<source ref="id17"/>
+			<target ref="id17"/>
+			<label kind="select" x="178" y="-161">i:int[0,ND-1], tt:int[0,1]</label>
+			<label kind="guard" x="238" y="-127">available[i] == 1 &amp;&amp; !isStorm</label>
+			<label kind="synchronisation" x="255" y="-93">missionCh[i]!</label>
+			<label kind="assignment" x="238" y="-59">cur = i, missionType = tt</label>
+			<nail x="195" y="-60"/>
+			<nail x="250" y="-30"/>
+		</transition>
+		<!-- ReadyCtrl -> StormMode: tempête commence -->
+		<transition id="idCtrlToStorm">
+			<source ref="id17"/>
+			<target ref="idCtrlStorm"/>
+			<label kind="synchronisation" x="100" y="50">stormStart?</label>
+		</transition>
+		<!-- StormMode -> ReadyCtrl: tempête finie, drones déjà initialisés -->
+		<transition id="idCtrlFromStorm">
+			<source ref="idCtrlStorm"/>
+			<target ref="id17"/>
+			<label kind="guard" x="250" y="30">initialized</label>
+			<label kind="synchronisation" x="250" y="50">stormEnd?</label>
+		</transition>
+		<!-- StormMode -> InitCtrl: tempête finie, drones pas encore initialisés -->
+		<transition id="idStormToInit">
+			<source ref="idCtrlStorm"/>
+			<target ref="id16"/>
+			<label kind="guard" x="-100" y="60">!initialized</label>
+			<label kind="synchronisation" x="-100" y="80">stormEnd?</label>
+			<nail x="-187" y="150"/>
+		</transition>
+	</template>
+	<template>
+		<name>meteo</name>
+		<declaration>
+clock tm;  // horloge pour durée tempête
+</declaration>
+		<location id="idMeteoOk" x="0" y="0">
+			<name x="-30" y="-30">Normal</name>
+		</location>
+		<location id="idMeteoStorm" x="200" y="0">
+			<name x="170" y="-30">Storm</name>
+		</location>
+		<init ref="idMeteoOk"/>
+		<!-- Normal -> Storm: tempête commence (non déterministe) -->
+		<transition id="idStartStorm">
+			<source ref="idMeteoOk"/>
+			<target ref="idMeteoStorm"/>
+			<label kind="synchronisation" x="50" y="-50">stormStart!</label>
+			<label kind="assignment" x="50" y="-30">isStorm = true, tm = 0</label>
+		</transition>
+		<!-- Storm -> Normal: tempête finit après 10 unités de temps -->
+		<transition id="idEndStorm">
+			<source ref="idMeteoStorm"/>
+			<target ref="idMeteoOk"/>
+			<label kind="guard" x="50" y="30">tm &gt;= 10</label>
+			<label kind="synchronisation" x="50" y="50">stormEnd!</label>
+			<label kind="assignment" x="50" y="70">isStorm = false</label>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+d1 = drone(0);
+d2 = drone(1);
+c = controller();
+m = meteo();
+// List one or more processes to be composed into a system.
+system d1, d2, c, m;
+</system>
+	<queries>
+		<query>
+			<formula>A[] not deadlock</formula>
+			<comment>Vérifie qu'aucun état de blocage global n'est possible</comment>
+		</query>
+		<query>
+			<formula>A[] not (d1.Loading and d2.Loading)</formula>
+			<comment>Jamais deux drones sur la plateforme de chargement (0) en même temps</comment>
+		</query>
+		<query>
+			<formula>A[] not (d1.Unloading and d2.Unloading)</formula>
+			<comment>Jamais deux drones sur la plateforme de déchargement (1) en même temps</comment>
+		</query>
+		<query>
+			<formula>A[] (platform_lock[0] == -1 or platform_lock[0] == 0 or platform_lock[0] == 1)</formula>
+			<comment>Le verrou de la plateforme 0 appartient à un drone valide ou est libre</comment>
+		</query>
+		<query>
+			<formula>A[] (platform_lock[1] == -1 or platform_lock[1] == 0 or platform_lock[1] == 1)</formula>
+			<comment>Le verrou de la plateforme 1 appartient à un drone valide ou est libre</comment>
+		</query>
+		<query>
+			<formula>A[] (d1.battery &gt;= 0 and d1.battery &lt;= BAT_MAX)</formula>
+			<comment>Batterie drone 1 toujours dans les bornes [0, 100]</comment>
+		</query>
+		<query>
+			<formula>A[] (d2.battery &gt;= 0 and d2.battery &lt;= BAT_MAX)</formula>
+			<comment>Batterie drone 2 toujours dans les bornes [0, 100]</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; d1.Charging</formula>
+			<comment>Drone 1 peut atteindre l'état de charge</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; d2.Charging</formula>
+			<comment>Drone 2 peut atteindre l'état de charge</comment>
+		</query>
+		<query>
+			<formula>A[] (d1.ToUnloading imply d1.battery &gt; BAT_CRITICAL)</formula>
+			<comment>Drone 1 ne va vers déchargement que si batterie suffisante</comment>
+		</query>
+		<query>
+			<formula>A[] (d2.ToUnloading imply d2.battery &gt; BAT_CRITICAL)</formula>
+			<comment>Drone 2 ne va vers déchargement que si batterie suffisante</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; m.Storm</formula>
+			<comment>La tempête peut survenir</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; d1.SafeZone</formula>
+			<comment>Drone 1 peut atteindre la zone de sécurité</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; d2.SafeZone</formula>
+			<comment>Drone 2 peut atteindre la zone de sécurité</comment>
+		</query>
+		<query>
+			<formula>A[] (m.Storm imply (c.StormMode or c.InitCtrl))</formula>
+			<comment>Si météo en Storm, le contrôleur est en StormMode ou InitCtrl</comment>
+		</query>
+		<!-- =============== LIVENESS - Livraison conteneurs =============== -->
+		<query>
+			<formula>E&lt;&gt; d1.Unloading</formula>
+			<comment>Liveness: Drone 1 peut livrer un conteneur (atteint déchargement)</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; d2.Unloading</formula>
+			<comment>Liveness: Drone 2 peut livrer un conteneur (atteint déchargement)</comment>
+		</query>
+	</queries>
+</nta>
